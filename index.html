@@ -434,8 +434,12 @@
     if(state===S.RUN) launchCart();
     else if(state===S.CHOICE && choicePhase==='decide') steer(left?-1:+1); });
   function handleKey(k){ Audio.resume();
-    // INTRO 階段接受 Enter / 空白鍵 / 方向鍵，避免畫面提示和實際操作不一致。
-    if(state===S.INTRO && (k==='Enter'||k===' '||k==='ArrowRight'||k==='ArrowUp')){ beginRun(); return; }
+    // INTRO 階段：按確認鍵直接 beginRun + 立刻 launchCart，避免「要按兩次空白鍵」的混亂
+    if(state===S.INTRO && (k==='Enter'||k===' '||k==='ArrowRight'||k==='ArrowUp')){
+      beginRun();
+      if(state===S.RUN && !cart.launched) launchCart();
+      return;
+    }
     if(state===S.RUN && (k===' '||k==='ArrowRight'||k==='ArrowUp')) launchCart();
     if(state===S.CHOICE && choicePhase==='decide'){ if(k==='ArrowLeft'||k==='ArrowUp') steer(-1); if(k==='ArrowRight'||k==='ArrowDown') steer(+1); } }
   function showVoteBar(){ $('voteBar').classList.add('show'); $('voteResult').textContent=''; $('voteResult').className='voteResult';
@@ -494,8 +498,9 @@
   function vegEmoji(k){ return k==='watermelon'?'🍉':k==='pumpkin'?'🎃':'🥬'; }
   function basketTotal(){ return basket.watermelon+basket.pumpkin+basket.cabbage; }
   function enterChoiceIntro(){
-    if(basketTotal() < VEG_ROUNDS*3){
-      setupHarvestRound(Math.max(1, Math.min(VEG_ROUNDS, round || 1)));
+    // 用 round 判定採收是否完成，避免依賴 basket 數量導致誤判
+    if(round < VEG_ROUNDS){
+      setupHarvestRound(Math.max(1, round+1));
       return;
     }
     round=VEG_ROUNDS+1;
@@ -519,7 +524,7 @@
     if(state!==S.RUN||cart.launched) return;
     cart.launched=true;
     cart.targetSpeed=7+round*1.4;
-    setHud(''); // 清掉提示
+    setHud('🚂 衝刺中　採收進度 0／3');
   }
 
   function startChoiceSequence(){ state=S.CHOICE; choicePhase='approach'; cart.launched=true; cart.targetSpeed=6.0;
@@ -571,7 +576,8 @@
 
   // buttons
   $('startBtn').onclick=startGame;
-  $('introBtn').onclick=beginRun;
+  // 「準備好了」按一次直接進入採收 + 發車，避免使用者以為按了卻沒反應
+  $('introBtn').onclick=()=>{ beginRun(); if(state===S.RUN && !cart.launched) launchCart(); };
   $('harvestBtn').onclick=()=>{ hideAllPanels(); enterChoiceIntro(); };
   $('savedBtn').onclick=()=>{ dusk=0; if(round<=VEG_ROUNDS) nextRound(); else goReflect(); };
   $('rewindBtn').onclick=()=>{ hideAllPanels(); hideVoteBar(); blackout=0; shake=0; particles=[]; round=VEG_ROUNDS; nextRound(); };
@@ -585,17 +591,22 @@
   function goReflect(){
     if(!choiceCompleted){
       hideAllPanels(); hideVoteBar(); setHud('');
-      if(basketTotal()>=VEG_ROUNDS*3) enterChoiceIntro();
-      else setupHarvestRound(Math.max(1, Math.min(VEG_ROUNDS, round || 1)));
+      if(round>=VEG_ROUNDS) enterChoiceIntro();
+      else setupHarvestRound(Math.max(1, round || 1));
       return;
     }
     state=S.REFLECT; Audio.stopEngine(); blackout=0; dusk=0.4; hideAllPanels(); hideVoteBar(); show('pReflect'); setHud('');
   }
   $('muteBtn').onclick=()=>{ muted=!muted; Audio.setMuted(muted); $('muteBtn').classList.toggle('on',!muted); $('muteBtn').firstChild.textContent=muted?'🔇 ':'🔊 '; };
   $('choiceBtn').onclick=jumpToChoiceFork;
-  $('restartBtn').onclick=()=>{ clearTimeout(cryTimer1); hideAllPanels(); hideVoteBar(); Audio.stopEngine(); Audio.stopHeartbeat(); state=S.TITLE; round=0; choiceCompleted=false; setCount(''); setHud(''); blackout=0; dusk=0;
+  $('restartBtn').onclick=()=>{
+    // 採收/抉擇進行中誤觸會直接清空進度，先給確認
+    const midGame = [S.INTRO,S.RUN,S.VEGDONE,S.HARVEST_SUMMARY,S.CHOICE].includes(state) && round>0;
+    if(midGame && !confirm('遊戲進行中，確定要重新開始嗎？\n這會把目前的採收進度清空。')) return;
+    clearTimeout(cryTimer1); hideAllPanels(); hideVoteBar(); Audio.stopEngine(); Audio.stopHeartbeat(); state=S.TITLE; round=0; choiceCompleted=false; setCount(''); setHud(''); blackout=0; dusk=0;
     basket={watermelon:0, pumpkin:0, cabbage:0}; flyPieces=[]; basketPulse=0; vegs=[];
-    show('pTitle'); };
+    show('pTitle');
+  };
   $('voteGoBtn').onclick=submitVote;
   $('voteToggleBtn').onclick=()=>{ const v=$('voteBar'); v.classList.toggle('collapsed');
     $('voteToggleBtn').textContent=v.classList.contains('collapsed')?'▸':'▾'; };
@@ -871,8 +882,8 @@
 
   function update(dt){
     if(state===S.REFLECT && !choiceCompleted){
-      if(basketTotal()>=VEG_ROUNDS*3) enterChoiceIntro();
-      else setupHarvestRound(Math.max(1, Math.min(VEG_ROUNDS, round || 1)));
+      if(round>=VEG_ROUNDS) enterChoiceIntro();
+      else setupHarvestRound(Math.max(1, round || 1));
       return;
     }
     cart.speed += (cart.targetSpeed-cart.speed)*Math.min(1,dt*4);
@@ -890,6 +901,9 @@
         if(cart.launched && vs<=cartScreenX()+30){
           v.smashed=true;
           Audio.smash(); shake=6;
+          // HUD 更新採收進度，讓老師和孩子看得到「採了幾顆」
+          const got = vegs.filter(vg=>vg.smashed).length;
+          if(state===S.RUN) setHud('🚂 衝刺中　採收進度 '+got+'／3');
           spawnJuice(cartScreenX()+20, trackY()-18, v.kind);
           // 飛向左上角籃子的碎片（採收意象）
           for(let i=0;i<6;i++){
